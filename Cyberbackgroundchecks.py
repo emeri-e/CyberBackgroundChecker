@@ -21,6 +21,97 @@ from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
 import ast
 
+
+def list_csv_files(input_folder):
+    # List all CSV files in the input folder
+    csv_files = [f for f in os.listdir(input_folder) if f.endswith('.csv')]
+    print("Available CSV files:")
+    for idx, file in enumerate(csv_files):
+        print(f"{idx + 1}. {file}")
+    return csv_files
+
+def select_csv_file(csv_files):
+    # Ask the user to choose a CSV file
+    while True:
+        try:
+            file_idx = int(input("Select CSV: ")) - 1
+
+            if 0 <= file_idx < len(csv_files):
+                return csv_files[file_idx]
+            else:
+                print("Invalid selection. Please select a valid file number.")
+        except ValueError:
+            print("Please enter a valid number.")
+
+def verify_and_get_columns(df):
+    print('\n\n standardizing columns...')
+    # Standard column names to check against
+    standard_columns = ['Base Address', 'Full Name', 'Address', 'City', 'State']
+    
+    # If the columns already match the standard names, skip renaming
+    if set(standard_columns).issubset(set(df.columns)):
+        print("Columns are already standardized.")
+        return df
+
+    # Expected columns and their corresponding standardized names
+    expected_columns = {
+        'base_address': 'Base Address',
+        'firstname(or fullname)': 'Full Name',
+        'lastname(optional)': 'Full Name',
+        'address': 'Address',
+        'city': 'City',
+        'state': 'State'
+    }
+    columns_mapping = {}
+
+    for idx, col in enumerate(df.columns):
+        print(f"{idx + 1}. {col}")
+    print('\n')
+        
+    # Check for necessary columns or prompt user to select correct ones
+    for expected in expected_columns:
+        matched = [col for col in df.columns if expected in col.lower()]
+        
+        if matched and expected.lower() != 'address':
+            columns_mapping[expected] = matched[0]
+            print(f'{expected} selected')
+        else:
+            while True:
+                user_input = input(f"Select the column number for {expected}: ")
+                
+                if user_input == "" and expected == 'lastname(optional)':
+                    columns_mapping[expected] = ""
+                    break
+                elif user_input.isdigit():
+                    col_idx = int(user_input) - 1
+                    if 0 <= col_idx < len(df.columns):
+                        columns_mapping[expected] = df.columns[col_idx]
+                        break
+                    else:
+                        print("Invalid selection. Please choose a valid column number.")
+                else:
+                    print("Please enter a valid number or press Enter if not applicable.")
+
+    # Rename columns in DataFrame based on user input or default matching
+    final_columns = {}
+    final_columns['Base Address'] = columns_mapping.get('base_address')
+    
+    # Combine first name and last name if both are available; else use the full name
+    if 'lastname(optional)' in columns_mapping and columns_mapping['lastname(optional)']:
+        df['Full Name'] = df[columns_mapping['firstname(or fullname)']] + ' ' + df[columns_mapping['lastname(optional)']]
+    else:
+        df['Full Name'] = df[columns_mapping['firstname(or fullname)']]
+
+    # Rename other columns
+    df.rename(columns={
+        final_columns['Base Address']: 'Base Address',
+        columns_mapping.get('address', ''): 'Address',
+        columns_mapping.get('city', ''): 'City',
+        columns_mapping.get('state', ''): 'State'
+    }, inplace=True)
+
+    return df
+
 def PhoneNumbersProcessing(phone_details_l):
     df = pd.DataFrame(phone_details_l)
     df['Year'] = df['Year'].astype(int)
@@ -102,16 +193,23 @@ def find_best_match(name_list, target_name):
     return best_match, best_index
 
 # Load the data
-df = pd.read_csv("input.csv")
+csv_files = list_csv_files('input')
+selected_file = select_csv_file(csv_files)
+
+df = pd.read_csv(os.path.join('input', selected_file))
+final_columns = verify_and_get_columns(df)
+
+df.to_csv(os.path.join('input', selected_file), index=False)
+
 data_l = []
 
 counter = 0
 batch_size = 100  # Process in batches of 100 to avoid hitting rate limits
 save_interval = 100  # Save intermediate results every 100 entries
 
-for lastName, firstName, address, city, state in zip(df["Input Last Name"], df["Input First Name"], df["Owner Fix - Mailing Address"], df["Owner Fix - Mailing City"], df["Owner Fix - Mailing State"]):
+for base_address, name, address, city, state in zip(df["Base Address"], df["Full Name"], df["Address"], df["City"], df["State"]):
     counter += 1
-    inputName = str(firstName) + " " + str(lastName)
+    inputName = name
 
     # Sanitize the address to exclude anything after the # symbol
     if '#' in address:
@@ -121,9 +219,9 @@ for lastName, firstName, address, city, state in zip(df["Input Last Name"], df["
     inputCity = str(city).replace(" ", "-")
 
     temp = {}
-    temp["Address"] = address  # Include the Address column
-    temp["FirstName_Input"] = firstName
-    temp["LastName_Input"] = lastName
+    temp["base_address"] = base_address  # Include the Address column
+    temp["FirstName_Input"] = name
+    temp["LastName_Input"] = ''
     temp["Address_Input"] = address
     temp["City_Input"] = city
     temp["State_Input"] = state
@@ -131,9 +229,22 @@ for lastName, firstName, address, city, state in zip(df["Input Last Name"], df["
     pageURL = ("https://cyberbackgroundchecks.com/address/" + str(inputAddress) + "/" + str(inputCity) + "/" + str(state)).lower()
     temp["Ping_URL"] = pageURL
 
-    options = Options()
+    # options = Options()
+    # options.add_argument('--no-sandbox')
+    # options.add_argument('--disable-dev-shm-usage')
     # options.headless = True
 
+    options = webdriver.ChromeOptions()
+    # chrome_options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-webgl')
+    options.add_argument('--disable-canvas-fingerprint')
+    options.add_argument("--disable-blink-features=AutomationControlled") 
+        
+    # options.add_experimental_option("excludeSwitches", ["enable-automation"]) 
+        
+    options.add_experimental_option("useAutomationExtension", False) 
     # service = FirefoxService(GeckoDriverManager().install())
     # driver1 = webdriver.Firefox(service=service, options=options)
     driver1 = webdriver.Chrome(options=options)
@@ -148,7 +259,6 @@ for lastName, firstName, address, city, state in zip(df["Input Last Name"], df["
 
     try:
         resultsLabel = driver1.find_element(By.XPATH, "//h1[@class='total-records-label']")
-
         if resultsLabel:
             if "results" in resultsLabel.text:
                 totalResults = int(resultsLabel.text.split(" ")[0])
@@ -166,11 +276,13 @@ for lastName, firstName, address, city, state in zip(df["Input Last Name"], df["
                 else:
                     for i in range(1, pages + 1):
                         print("Getting Page No: ", i)
-                        options = Options()
-                        options.headless is True
+                        # options = Options()
+                        # options.headless is True
 
-                        service = FirefoxService(GeckoDriverManager().install())
-                        driver = webdriver.Firefox(service=service, options=options)
+                        # service = FirefoxService(GeckoDriverManager().install())
+                        # driver = webdriver.Firefox(service=service, options=options)
+
+                        driver = webdriver.Chrome(options=options)
 
                         driver.maximize_window()
 
@@ -191,10 +303,11 @@ for lastName, firstName, address, city, state in zip(df["Input Last Name"], df["
         best_match, best_index = find_best_match(names_l, target_name.lower())
 
         options = Options()
-        options.headless is True
+        # options.headless is True
 
-        service = FirefoxService(GeckoDriverManager().install())
-        driver = webdriver.Firefox(service=service, options=options)
+        # service = FirefoxService(GeckoDriverManager().install())
+        # driver = webdriver.Firefox(service=service, options=options)
+        driver = webdriver.Chrome(options=options)
         driver.maximize_window()
         driver.get("https://cyberbackgroundchecks.com" + maindetails_l_1[best_index]["URL"])
         page_content = driver.page_source
@@ -228,19 +341,19 @@ for lastName, firstName, address, city, state in zip(df["Input Last Name"], df["
     if counter % save_interval == 0:
         print(f"Saving intermediate results at {counter} entries.")
         df_intermediate = pd.DataFrame(data_l)
-        df_intermediate.to_excel(f'enter your file path here', index=False)
+        df_intermediate.to_csv(f'output\\Intermediate_Output_{counter}.csv',sep=',', index=False)
 
 # Save the last set of entries
 if counter % save_interval != 0:
     print(f"Saving final entries at {counter} entries.")
     df_intermediate = pd.DataFrame(data_l)
-    df_intermediate.to_excel(f"/Users/josebelfast-kum/Documents/output folder/Intermediate_Output_{counter}.xlsx", index=False)
+    df_intermediate.to_csv(f"output\\Intermediate_Output_{counter}.csv",sep=',', index=False)
 
 # Combine all intermediate files and the final set into one DataFrame
 all_dataframes = []
 for i in range(save_interval, counter + save_interval, save_interval):
     try:
-        df_temp = pd.read_excel(f"enter your file path here_Output_{i}.xlsx")
+        df_temp = pd.read_csv(f"output\\Intermediate_Output_{i}.csv")
         all_dataframes.append(df_temp)
     except FileNotFoundError:
         pass
@@ -277,7 +390,7 @@ for i in range(5):
 df_all_entries = df_all_entries.drop(columns=['Phone'])
 
 # Save the processed data to a new Excel file
-output_file_path = 'enter your file path here'
-df_all_entries.to_excel(output_file_path, index=False)
+output_file_path = 'export.csv'
+df_all_entries.to_csv(output_file_path, index=False)
 
 print("Final data saved to", output_file_path)
